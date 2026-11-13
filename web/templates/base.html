@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}DL/T 645 Fuzz{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">645</span>
+    <div>
+      <div class="title">DL/T 645 规约模糊测试平台</div>
+      <div class="sub">coverage-guided · ASan · persistent worker</div>
+    </div>
+  </div>
+  <nav>
+    <a href="/" class="{{ 'active' if request.path == '/' }}">目标</a>
+    <a href="/corpus" class="{{ 'active' if request.path == '/corpus' }}">语料</a>
+    <a href="/monitor" class="{{ 'active' if request.path == '/monitor' }}">运行监控</a>
+    <a href="/crashes" class="{{ 'active' if request.path == '/crashes' }}">崩溃分桶</a>
+    <a href="/regression" class="{{ 'active' if request.path == '/regression' }}">回归</a>
+  </nav>
+  <div class="runstate" id="runstate">
+    <span class="dot" id="statedot"></span>
+    <span id="statetext">加载中</span>
+  </div>
+</header>
+<main>
+  {% block body %}{% endblock %}
+</main>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -16,3 +16,11 @@ node_modules/
 __pycache__/
 .venv/
 venv/
+
+# build artefacts
+build/
+*.dSYM/
+# campaign outputs (corpus, crash inputs, reports)
+runs/
+# local server scratch
+.pytest_cache/

@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}崩溃分桶 · DL/T 645 Fuzz{% endblock %}
+{% block body %}
+<div class="toolbar">
+  <h2 style="margin:0">崩溃分桶</h2>
+  <span class="pill info" id="b-count">—</span>
+  <span class="muted small">按 (内存安全族, 出错函数) 归一化：同根因合并，不同根因拆分</span>
+  <span class="spacer"></span>
+  <div class="tabs" id="status-tabs">
+    <button class="on" data-status="">全部</button>
+    <button data-status="open">未修复</button>
+    <button data-status="fixed">已修复</button>
+  </div>
+</div>
+
+<div id="bucket-list"><div class="card muted">加载中…</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let BUCKETS = [];
+let STATUS = '';
+
+function cls(status) {
+  return status === 'fixed' ? 'ok' : status === 'open' ? 'bad' : 'warn';
+}
+
+function renderBuckets() {
+  const rows = STATUS ? BUCKETS.filter(b => b.status === STATUS) : BUCKETS;
+  const el = document.getElementById('bucket-list');
+  if (!rows.length) { el.innerHTML = '<div class="card muted">没有桶</div>'; return; }
+  el.innerHTML = rows.map(b => `
+    <div class="bucket" id="bk-${b.id}">
+      <div class="bucket-head" onclick="toggle('${b.id}')">
+        <span class="pill ${cls(b.status)}">${b.status}</span>
+        <div class="grow">
+          <div class="name">${esc(b.bug_class)} · <b>${esc(b.function)}</b></div>
+          <div class="loc">${esc(b.location)} · 函数 <b>${esc(b.function)}</b> · 根因键 ${b.id}</div>
+        </div>
+        <span class="pill info">${b.total_crashes} 次</span>
+        <span class="pill">${b.unique_inputs} 个输入</span>
+        ${b.minimised ? `<span class="pill ok">复现 ${b.minimised.after}B</span>` : ''}
+        <span class="muted small">首次 ${new Date(b.first_seen * 1000).toLocaleTimeString()}</span>
+      </div>
+      <div class="bucket-body">
+        <h4>调用栈</h4>
+        <pre>${esc((b.top_frames || []).join('\n') || '(无)')}</pre>
+        <h4>复现</h4>
+        <div id="repro-${b.id}" class="small muted">展开后自动准备最小复现报文…</div>
+      </div>
+    </div>`).join('');
+}
+
+async function prepareRepro(id) {
+  const el = document.getElementById('repro-' + id);
+  el.innerHTML = '<span class="muted">最小化中…</span>';
+  try {
+    const j = await API.get('/api/buckets/' + id);
+    const b = j.bucket;
+    let html = `<div class="mono small">样例崩溃输入 ${j.crashes[0].size} 字节</div>`;
+    const min = (BUCKETS.find(x => x.id === id) || {}).minimised;
+    if (min) {
+      html += `<div class="mono small" style="margin-top:6px">后台已最小化: ${min.before} → ${min.after} 字节</div>`;
+    }
+    html += `<div class="toolbar" style="margin-top:10px">
+      <button onclick="minimise('${id}')">最小化并生成复现命令</button>
+      <span class="muted small" id="min-msg-${id}"></span></div>
+      <pre id="min-out-${id}" style="display:none"></pre>
+      <h4>ASan 报告 (首次出现)</h4>
+      <pre>${esc(j.sample_report)}</pre>`;
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = '<span class="pill bad">' + esc(e.message) + '</span>'; }
+}
+
+async function minimise(id) {
+  const msg = document.getElementById('min-msg-' + id);
+  msg.textContent = '最小化中…';
+  try {
+    const j = await API.post('/api/buckets/' + id + '/minimise');
+    msg.textContent = `${j.before} → ${j.after} 字节 · ${j.execs} 次执行 · 覆盖率保持`;
+    const out = document.getElementById('min-out-' + id);
+    out.style.display = 'block';
+    out.textContent =
+      '复现报文 (hex):\n' + j.hex.replace(/(..)/g, '$1 ').trim() + '\n\n' +
+      '按帧解码:\n' + j.decoded.frames.map((f, i) =>
+        `  帧${i + 1} addr=${f.address} ctrl=${f.ctrl} L=${f.declared_len} data=${f.data} end=${f.end}`).join('\n') +
+      '\n\n复现命令:\n' + j.command;
+    load();
+  } catch (e) { msg.textContent = ''; toast(e.message, true); }
+}
+
+function toggle(id) {
+  const el = document.getElementById('bk-' + id);
+  const open = el.classList.toggle('open');
+  if (open) prepareRepro(id);
+}
+
+async function load() {
+  try {
+    const j = await API.get('/api/buckets');
+    BUCKETS = j.buckets;
+    document.getElementById('b-count').textContent =
+      j.buckets.length + ' 个桶 · ' + j.buckets.filter(b => b.status === 'open').length + ' 未修复';
+    renderBuckets();
+  } catch (e) { /* boot */ }
+}
+
+document.querySelectorAll('#status-tabs button').forEach(b => {
+  b.onclick = () => {
+    STATUS = b.dataset.status;
+    document.querySelectorAll('#status-tabs button').forEach(x => x.classList.toggle('on', x === b));
+    renderBuckets();
+  };
+});
+
+load();
+setInterval(load, 4000);
+</script>
+{% endblock %}

@@ -1,0 +1,66 @@
+[
+  {
+    "id": "D01",
+    "kind": "长度域",
+    "title": "2007 帧长度域 L 未按 200 字节缓冲校验",
+    "location": "dl645.c:164",
+    "function": "parse_frame_2007",
+    "detail": "L 为 1 字节 (0..255)，只检查报文里有 L 字节，没检查 L <= 200，栈缓冲越界写"
+  },
+  {
+    "id": "D02",
+    "kind": "长度域",
+    "title": "1997 双字节长度 L2 拷贝前未检查剩余字节",
+    "location": "dl645.c:214",
+    "function": "parse_frame_1997",
+    "detail": "只限制 L2 <= 200，未检查 11+L2 <= n；拷贝与结束符读取两处都会越界读（同函数，归一个桶）"
+  },
+  {
+    "id": "D03",
+    "kind": "校验和",
+    "title": "校验和重传策略表 16 项却按 calc & 0x1F 索引",
+    "location": "dl645.c:138",
+    "function": "checksum_retry",
+    "detail": "校验和错误路径上 calc 落在 16..31 时越界读全局表"
+  },
+  {
+    "id": "D04",
+    "kind": "BCD",
+    "title": "地址 BCD 解码查 10 项字符表，索引 0..15",
+    "location": "dl645.c:48",
+    "function": "addr_decode",
+    "detail": "半字节 0xA..0xF 越界；高/低半字节分别在第 48/49 行，需归并为一个桶"
+  },
+  {
+    "id": "D05",
+    "kind": "BCD",
+    "title": "电能量小数位半字节查 8 项倍率表",
+    "location": "dl645.c:113",
+    "function": "dispatch_item",
+    "detail": "DI=0x9010 时小数位 0x8..0xF 越界"
+  },
+  {
+    "id": "D06",
+    "kind": "控制码",
+    "title": "控制码分类表 24 项却按 ctrl & 0x1F 索引",
+    "location": "dl645.c:85",
+    "function": "dispatch",
+    "detail": "控制码低位 24..31 越界读全局表"
+  },
+  {
+    "id": "D07",
+    "kind": "重传缓存",
+    "title": "重传缓存 free 之后继续写入",
+    "location": "dl645.c:303",
+    "function": "retransmit_cache",
+    "detail": "先收到合法帧填缓存，再收到校验和错误帧时 use-after-free"
+  },
+  {
+    "id": "D08",
+    "kind": "流式记账",
+    "title": "4 槽批处理窗口用 1 基帧号寻址",
+    "location": "dl645.c:320",
+    "function": "record_batch",
+    "detail": "单输入内第 5 帧写 batch[4]，堆越界写"
+  }
+]

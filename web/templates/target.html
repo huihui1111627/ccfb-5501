@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}目标 · DL/T 645 Fuzz{% endblock %}
+{% block body %}
+<div class="toolbar">
+  <h2 style="margin:0">目标</h2>
+  <span class="pill info">dl645.c · DL/T 645-2007 / 1997</span>
+  <span class="spacer"></span>
+  <div class="label">workers</div>
+  <input type="number" id="cfg-workers" value="8" min="1" max="32">
+  <div class="label">时长(s)</div>
+  <input type="number" id="cfg-duration" value="1800" min="10" step="30">
+  <button class="primary" id="btn-start">启动</button>
+  <button class="danger" id="btn-stop">停止</button>
+</div>
+
+<div class="grid cols-4" style="margin-bottom:16px">
+  <div class="card"><div class="label">执行次数</div><div class="stat" id="s-execs">—</div></div>
+  <div class="card"><div class="label">边覆盖</div><div class="stat" id="s-edges">—</div></div>
+  <div class="card"><div class="label">崩溃分桶</div><div class="stat" id="s-buckets">—</div></div>
+  <div class="card"><div class="label">已触发缺陷</div><div class="stat" id="s-defects">—</div></div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <h3>构建</h3>
+    <dl class="kv" id="build-kv"></dl>
+    <h3 style="margin-top:16px">目标</h3>
+    <div class="small muted">
+      解析器按 DL/T 645 帧格式处理一帧或多帧串联的报文：起始符 68H、6 字节 BCD 地址、
+      控制码 C、长度域 L、数据域、校验和 CS（从起始符累加到数据域末字节）、结束符 16H。
+      集抄终端在 485 / TCP 上行链路上收到从站应答后就调用这一套逻辑，因此长度域、
+      校验和与 BCD 字段是现场最容易出问题的地方。
+    </div>
+  </div>
+  <div class="card">
+    <h3>入口 / 报文样例</h3>
+    <pre id="sample-frame" class="hex"></pre>
+    <h3 style="margin-top:14px">注入缺陷清单</h3>
+    <div class="small muted" style="margin-bottom:8px">
+      每条缺陷都在 dl645.c 里以 <code>DEFECT Dxx</code> 标注；修复版用
+      <code>-DDL645_FIXED</code> 编译，回归页会把复现报文重放到修复版上。
+    </div>
+    <div id="defect-list"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function renderDefects(defects, hitFns) {
+  const el = document.getElementById('defect-list');
+  if (!defects || !defects.length) { el.innerHTML = '<div class="muted small">defects.json 未加载</div>'; return; }
+  el.innerHTML = defects.map(d => {
+    const hit = hitFns.includes(d.function);
+    return `<div class="defect ${hit ? 'hit' : ''}">
+      <span class="id">${esc(d.id)}</span>
+      <span class="pill ${hit ? 'bad' : 'info'}" style="margin-left:8px">${esc(d.kind)}</span>
+      <span style="margin-left:8px">${esc(d.title)}</span>
+      <div class="why"><code>${esc(d.function)}</code> <span class="muted">${esc(d.location)}</span> · ${esc(d.detail)}</div>
+    </div>`;
+  }).join('');
+}
+
+async function load() {
+  try {
+    const t = await API.get('/api/target');
+    const s = t.status || { execs: 0, edges: 0, buckets: 0 };
+    document.getElementById('s-execs').textContent = fmt(s.execs);
+    document.getElementById('s-edges').textContent = fmt(s.edges);
+    document.getElementById('s-buckets').textContent = fmt(s.buckets);
+    const kv = document.getElementById('build-kv');
+    kv.innerHTML = Object.entries(t.meta).filter(([k, v]) => v).map(([k, v]) =>
+      `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+    // match by function, not line: one root cause can be observed at more
+    // than one line (e.g. the 1997 copy and the trailer read)
+    const hitFns = (await API.get('/api/buckets')).buckets.map(b => b.function);
+    document.getElementById('s-defects').textContent =
+      t.defects.filter(d => hitFns.includes(d.function)).length + ' / ' + t.defects.length;
+    renderDefects(t.defects, hitFns);
+    document.getElementById('sample-frame').textContent =
+      '68 11 22 33 44 55 66 68 11 04 10 90 00 01 85 16\n' +
+      '│  └─ A0..A5 ─┘  │  C  L └─ data ─┘ CS 16\n' +
+      '68 00 00 00 00 00 00 68 91 04 00 00 00 00 9D 16';
+  } catch (e) { toast(e.message, true); }
+}
+
+document.getElementById('btn-start').onclick = async () => {
+  try {
+    await API.post('/api/campaign/start', {
+      workers: +document.getElementById('cfg-workers').value,
+      duration: +document.getElementById('cfg-duration').value,
+    });
+    toast('campaign started');
+  } catch (e) { toast(e.message, true); }
+};
+document.getElementById('btn-stop').onclick = async () => {
+  try { await API.post('/api/campaign/stop'); toast('stopping'); }
+  catch (e) { toast(e.message, true); }
+};
+
+load();
+setInterval(load, 5000);
+</script>
+{% endblock %}

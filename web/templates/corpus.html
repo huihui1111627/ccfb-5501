@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}语料 · DL/T 645 Fuzz{% endblock %}
+{% block body %}
+<div class="toolbar">
+  <h2 style="margin:0">语料</h2>
+  <span class="pill info" id="c-count">—</span>
+  <span class="pill" id="c-seeds">—</span>
+  <span class="pill" id="c-fuzz">—</span>
+  <span class="spacer"></span>
+  <button id="btn-trim">精简去冗余</button>
+</div>
+
+<div class="grid cols-2" style="margin-bottom:16px">
+  <div class="card">
+    <h3>按帧格式自动生成种子</h3>
+    <div class="small muted">
+      种子不是从现场抓的报文，而是按规约语法组合出来的：每个控制码 × 典型数据项、
+      每一种数据标识、多帧串联、校验和错误的帧、1997 双字节长度帧，以及截断/畸形报文。
+      语料页会显示每个种子的来源、深度（变异了几代）和命中次数。
+    </div>
+    <dl class="kv" style="margin-top:12px">
+      <dt>种子</dt><dd id="kv-seeds">—</dd>
+      <dt>变异新增</dt><dd id="kv-fuzz">—</dd>
+      <dt>上一次精简</dt><dd id="kv-trim">—</dd>
+      <dt>覆盖率</dt><dd id="kv-cov">—</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h3>精简结果</h3>
+    <pre id="trim-report">尚未执行精简</pre>
+  </div>
+</div>
+
+<div class="card">
+  <div class="toolbar" style="margin-bottom:10px">
+    <h3 style="margin:0">语料条目</h3>
+    <span class="spacer"></span>
+    <div class="tabs" id="origin-tabs">
+      <button class="on" data-origin="">全部</button>
+      <button data-origin="seed">种子</button>
+      <button data-origin="fuzz">变异</button>
+    </div>
+  </div>
+  <table>
+    <thead><tr>
+      <th>来源</th><th>大小</th><th>边</th><th>深度</th><th>命中</th><th>报文前缀</th><th>加入时间</th><th></th>
+    </tr></thead>
+    <tbody id="corpus-body"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px; display:none" id="detail-card">
+  <h3 id="detail-title">条目</h3>
+  <div class="grid cols-2">
+    <div>
+      <h3>原始字节</h3>
+      <pre id="detail-hex"></pre>
+    </div>
+    <div>
+      <h3>按帧解码</h3>
+      <pre id="detail-decoded"></pre>
+    </div>
+  </div>
+  <div class="toolbar" style="margin-top:12px">
+    <button id="btn-detail-min">对这条语料做最小化</button>
+    <span class="muted small" id="detail-min-result"></span>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let ORIGIN = '';
+
+function renderEntries(entries) {
+  const body = document.getElementById('corpus-body');
+  if (!entries.length) { body.innerHTML = '<tr><td colspan="8" class="muted">空</td></tr>'; return; }
+  body.innerHTML = entries.map(e => `
+    <tr>
+      <td><span class="pill ${e.origin === 'seed' ? 'ok' : 'info'}">${e.origin}</span></td>
+      <td class="mono">${bytes(e.size)}</td>
+      <td class="mono">${e.edges}</td>
+      <td class="mono">${e.depth}</td>
+      <td class="mono">${e.hits}</td>
+      <td class="hex" style="max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${esc(e.preview)}</td>
+      <td class="mono muted">${new Date(e.added * 1000).toLocaleTimeString()}</td>
+      <td><button class="small" data-id="${e.id}">查看</button></td>
+    </tr>`).join('');
+  body.querySelectorAll('button[data-id]').forEach(b => {
+    b.onclick = () => showDetail(b.dataset.id);
+  });
+}
+
+async function showDetail(id) {
+  const j = await API.get('/api/corpus/' + id);
+  document.getElementById('detail-card').style.display = 'block';
+  document.getElementById('detail-title').textContent = '条目 ' + id;
+  document.getElementById('detail-hex').textContent = hexdump(Array.from(
+    Uint8Array.from(j.hex.match(/.{2}/g).map(h => parseInt(h, 16)))));
+  const d = j.decoded;
+  let text = d.frames.map((f, i) =>
+    `帧 ${i + 1}: addr=${f.address} ctrl=${f.ctrl} L=${f.declared_len}` +
+    (f.declared_len !== f.len ? ` (实际 ${f.len})` : '') +
+    `\n  data=${f.data}\n  end=${f.end}`).join('\n');
+  if (d.tail) text += `\n尾部未解析 ${d.tail.length / 2} 字节:\n  ${d.tail}`;
+  document.getElementById('detail-decoded').textContent = text || '(无完整帧)';
+  document.getElementById('detail-min-result').textContent = '';
+  document.getElementById('btn-detail-min').onclick = async () => {
+    try {
+      const r = await API.post('/api/corpus/minimize/' + id);
+      document.getElementById('detail-min-result').textContent =
+        `${r.before} → ${r.after} 字节 (${r.execs} 次执行)`;
+      document.getElementById('detail-hex').textContent = hexdump(Array.from(
+        Uint8Array.from(r.hex.match(/.{2}/g).map(h => parseInt(h, 16)))));
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+async function load() {
+  try {
+    const j = await API.get('/api/corpus');
+    const entries = ORIGIN ? j.entries.filter(e => e.origin === ORIGIN) : j.entries;
+    document.getElementById('c-count').textContent = j.count + ' 条语料';
+    document.getElementById('c-seeds').textContent = '种子 ' + (j.by_origin.seed || 0);
+    document.getElementById('c-fuzz').textContent = '变异 ' + (j.by_origin.fuzz || 0);
+    document.getElementById('kv-seeds').textContent = j.by_origin.seed || 0;
+    document.getElementById('kv-fuzz').textContent = j.by_origin.fuzz || 0;
+    const tr = j.trim;
+    document.getElementById('kv-trim').textContent = tr
+      ? `${tr.before} → ${tr.after} (${tr.dropped != null ? tr.dropped : tr.removed} 条移除)` : '尚未执行';
+    if (tr) {
+      document.getElementById('trim-report').textContent =
+        `时间: ${new Date(tr.at * 1000).toLocaleString()}\n` +
+        `条目: ${tr.before} → ${tr.after}\n` +
+        `覆盖边: ${tr.edges_before} → ${tr.edges_after}（保持不降）`;
+    }
+    const st = (await API.get('/api/status')).status;
+    document.getElementById('kv-cov').textContent = st.edges + ' 边 / ' + st.execs + ' 次执行';
+    renderEntries(entries.slice().reverse());
+  } catch (e) { /* boot */ }
+}
+
+document.getElementById('btn-trim').onclick = async () => {
+  try {
+    const j = await API.post('/api/corpus/trim');
+    toast(`精简完成: ${j.stats.before} → ${j.stats.after}`);
+    load();
+  } catch (e) { toast(e.message, true); }
+};
+
+document.querySelectorAll('#origin-tabs button').forEach(b => {
+  b.onclick = () => {
+    ORIGIN = b.dataset.origin;
+    document.querySelectorAll('#origin-tabs button').forEach(x => x.classList.toggle('on', x === b));
+    load();
+  };
+});
+
+load();
+setInterval(load, 4000);
+</script>
+{% endblock %}

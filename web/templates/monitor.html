@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}运行监控 · DL/T 645 Fuzz{% endblock %}
+{% block body %}
+<div class="toolbar">
+  <h2 style="margin:0">运行监控</h2>
+  <span class="pill info" id="m-state">—</span>
+  <span class="pill" id="m-elapsed">—</span>
+  <span class="spacer"></span>
+  <span class="muted small">刷新间隔 1s</span>
+</div>
+
+<div class="grid cols-4" style="margin-bottom:16px">
+  <div class="card"><div class="label">执行速度</div><div class="stat" id="m-rate">—<span class="unit">exec/s</span></div></div>
+  <div class="card"><div class="label">累计执行</div><div class="stat" id="m-execs">—</div></div>
+  <div class="card"><div class="label">边覆盖</div><div class="stat" id="m-edges">—</div></div>
+  <div class="card"><div class="label">崩溃次数</div><div class="stat" id="m-crashes">—</div></div>
+</div>
+
+<div class="grid cols-2" style="margin-bottom:16px">
+  <div class="card">
+    <h3>执行速度 (exec/s)</h3>
+    <canvas class="chart" id="chart-rate"></canvas>
+    <div class="legend"><span><i style="background:#4fb3ff"></i>总执行速度</span></div>
+  </div>
+  <div class="card">
+    <h3>覆盖边 / 崩溃分桶</h3>
+    <canvas class="chart" id="chart-cov"></canvas>
+    <div class="legend">
+      <span><i style="background:#3ddc84"></i>边</span>
+      <span><i style="background:#ff5f56"></i>桶</span>
+    </div>
+  </div>
+</div>
+
+<div class="grid cols-3" style="margin-bottom:16px">
+  <div class="card">
+    <h3>变异算子崩溃产出</h3>
+    <div class="small muted" style="margin-bottom:8px">
+      每个结构算子产生输入的崩溃比例。崩溃要重启 ASan 进程（~100ms），
+      比例越高越"贵"。
+    </div>
+    <div id="op-yield"><span class="muted small">统计中…</span></div>
+  </div>
+  <div class="card">
+    <h3>执行成本构成</h3>
+    <dl class="kv">
+      <dt>普通输入</dt><dd id="cost-plain">~70 µs</dd>
+      <dt>崩溃输入</dt><dd id="cost-crash">~120 ms</dd>
+      <dt>崩溃占比</dt><dd id="cost-ratio">—</dd>
+      <dt>ASan 进程重启</dt><dd>每个崩溃一次</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h3>运行参数</h3>
+    <dl class="kv">
+      <dt>worker</dt><dd id="p-workers">—</dd>
+      <dt>语料</dt><dd id="p-corpus">—</dd>
+      <dt>已运行</dt><dd id="p-elapsed">—</dd>
+      <dt>覆盖率</dt><dd id="p-cov">—</dd>
+      <dt>worker 异常</dt><dd id="p-err">—</dd>
+      <dt>不崩溃输入占比</dt><dd id="p-benign">—</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <h3>并行 worker</h3>
+    <table>
+      <thead><tr><th>#</th><th>执行</th><th>崩溃</th><th>重启</th><th>异常</th><th>状态</th></tr></thead>
+      <tbody id="worker-body"><tr><td colspan="5" class="muted">—</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>事件</h3>
+    <table>
+      <thead><tr><th>时间</th><th>类型</th><th>内容</th></tr></thead>
+      <tbody id="event-body"><tr><td colspan="3" class="muted">—</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let lastSamples = [];
+
+function draw(samples) {
+  if (!samples.length) return;
+  const span = Math.max(10, samples[samples.length - 1].at - samples[0].at);
+  const ratePts = samples.map((s, i) => [i, s.exec_rate]);
+  const edgePts = samples.map((s, i) => [i, s.edges]);
+  const bucketPts = samples.map((s, i) => [i, s.buckets]);
+  lineChart(document.getElementById('chart-rate'),
+    [{ points: ratePts, color: '#4fb3ff', fill: true }], { span });
+  lineChart(document.getElementById('chart-cov'),
+    [{ points: edgePts, color: '#3ddc84', fill: true },
+     { points: bucketPts, color: '#ff5f56' }], { span });
+}
+
+async function tick() {
+  try {
+    const [st, sa] = await Promise.all([API.get('/api/status'), API.get('/api/samples?limit=600')]);
+    const s = st.status;
+    document.getElementById('m-state').textContent = s.running ? '运行中' : '已停止';
+    document.getElementById('m-state').className = 'pill ' + (s.running ? 'ok' : 'warn');
+    document.getElementById('m-elapsed').textContent = '已运行 ' + dur(s.elapsed) + ' / ' + fmt(s.corpus) + ' 条语料';
+    document.getElementById('m-rate').innerHTML = fmt(s.exec_rate, 0) + '<span class="unit">exec/s</span>';
+    document.getElementById('m-execs').textContent = fmt(s.execs);
+    document.getElementById('m-edges').textContent = fmt(s.edges);
+    document.getElementById('m-crashes').textContent = fmt(s.crashes);
+
+    lastSamples = sa.samples;
+    draw(lastSamples);
+
+    document.getElementById('worker-body').innerHTML = s.workers.map(w => `
+      <tr><td class="mono">${w.id}</td><td class="mono">${fmt(w.execs)}</td>
+      <td class="mono">${fmt(w.crashes)}</td><td class="mono">${fmt(w.restarts)}</td>
+      <td class="mono" style="color:${w.errors ? 'var(--bad)' : ''}">${fmt(w.errors || 0)}</td>
+      <td><span class="pill ${w.errors ? 'warn' : s.running ? 'ok' : 'warn'}">${w.errors ? 'recovered' : s.running ? 'fuzzing' : 'idle'}</span></td></tr>`).join('');
+
+    const ops = s.op_crash_yield || {};
+    const opEl = document.getElementById('op-yield');
+    const entries = Object.entries(ops).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    opEl.innerHTML = entries.length ? entries.map(([k, v]) => `
+      <div style="display:flex;align-items:center;gap:8px;margin:3px 0">
+        <span class="mono small" style="width:96px;color:var(--muted)">${esc(k)}</span>
+        <div style="flex:1;height:6px;background:var(--panel-2);border-radius:3px;overflow:hidden">
+          <div style="width:${Math.min(100, v * 100)}%;height:100%;background:${v > .5 ? 'var(--bad)' : v > .3 ? 'var(--warn)' : 'var(--ok)'}"></div>
+        </div>
+        <span class="mono small" style="width:44px;text-align:right">${(v * 100).toFixed(0)}%</span>
+      </div>`).join('') : '<span class="muted small">运行后显示</span>';
+    document.getElementById('cost-ratio').textContent =
+      ((s.crash_rate || 0) * 100).toFixed(1) + '%';
+    document.getElementById('p-workers').textContent = s.workers.length;
+    document.getElementById('p-corpus').textContent = s.corpus + ' 条';
+    document.getElementById('p-elapsed').textContent = dur(s.elapsed);
+    document.getElementById('p-cov').textContent = s.edges + ' 边';
+    const errEl = document.getElementById('p-err');
+    errEl.textContent = String(s.worker_errors || 0);
+    errEl.style.color = (s.worker_errors || 0) > 0 ? 'var(--bad)' : '';
+    document.getElementById('p-benign').textContent =
+      ((1 - (s.crash_rate || 0)) * 100).toFixed(1) + '%';
+
+    const ev = await API.get('/api/events');
+    document.getElementById('event-body').innerHTML = ev.events.slice(-12).reverse().map(e => `
+      <tr><td class="mono muted">${new Date(e.at * 1000).toLocaleTimeString()}</td>
+      <td><span class="pill ${e.kind === 'bucket' ? 'bad' : e.kind === 'error' ? 'warn' : 'info'}">${e.kind}</span></td>
+      <td class="small">${esc(e.message)}</td></tr>`).join('');
+  } catch (e) { /* boot */ }
+}
+
+tick();
+setInterval(tick, 1000);
+window.addEventListener('resize', () => draw(lastSamples));
+</script>
+{% endblock %}

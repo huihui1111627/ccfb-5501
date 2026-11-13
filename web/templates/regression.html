@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}回归 · DL/T 645 Fuzz{% endblock %}
+{% block body %}
+<div class="toolbar">
+  <h2 style="margin:0">回归</h2>
+  <span class="pill info">修复版 <code>-DDL645_FIXED</code></span>
+  <span class="spacer"></span>
+  <button class="primary" id="btn-run">对修复版一键回归</button>
+</div>
+
+<div class="grid cols-4" style="margin-bottom:16px">
+  <div class="card"><div class="label">桶总数</div><div class="stat" id="r-total">—</div></div>
+  <div class="card"><div class="label">已修复</div><div class="stat" id="r-fixed" style="color:var(--ok)">—</div></div>
+  <div class="card"><div class="label">仍存在</div><div class="stat" id="r-open" style="color:var(--bad)">—</div></div>
+  <div class="card"><div class="label">最近回归</div><div class="stat small" id="r-last">—</div></div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <h3>回归说明</h3>
+  <div class="small muted">
+    每个桶保存一份最小化复现报文。回归时把所有复现报文重放到修复版二进制上：
+    不再崩溃的桶标记为 <span class="pill ok">fixed</span>，仍崩溃的保持
+    <span class="pill bad">open</span>，若崩溃点转移到别的函数则原桶关闭并在结果里
+    标出新位置。整个过程不需要重新跑 30 分钟的 fuzzing。
+  </div>
+</div>
+
+<div class="card">
+  <h3>桶状态</h3>
+  <table>
+    <thead><tr><th>状态</th><th>类型</th><th>位置</th><th>函数</th><th>崩溃次数</th><th>复现报文</th><th>回归结果</th></tr></thead>
+    <tbody id="reg-body"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px; display:none" id="run-card">
+  <h3>本次回归结果</h3>
+  <table>
+    <thead><tr><th>桶</th><th>结果</th><th>新签名</th><th>复现报文</th></tr></thead>
+    <tbody id="run-body"></tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function statusPill(s) {
+  const t = s === 'fixed' ? 'ok' : s === 'open' ? 'bad' : 'warn';
+  return `<span class="pill ${t}">${s}</span>`;
+}
+
+async function load() {
+  try {
+    const j = await API.get('/api/regression');
+    const buckets = j.buckets;
+    document.getElementById('r-total').textContent = buckets.length;
+    document.getElementById('r-fixed').textContent = buckets.filter(b => b.status === 'fixed').length;
+    document.getElementById('r-open').textContent = buckets.filter(b => b.status !== 'fixed').length;
+    document.getElementById('r-last').textContent = j.last
+      ? new Date(j.last.at * 1000).toLocaleTimeString() : '未执行';
+    document.getElementById('reg-body').innerHTML = buckets.map(b => {
+      const reg = b.regression || {};
+      return `<tr>
+        <td>${statusPill(b.status)}</td>
+        <td class="mono">${esc(b.label)}</td>
+        <td class="mono">${esc(b.location)}</td>
+        <td class="mono">${esc(b.function)}</td>
+        <td class="mono">${reg.crashes !== undefined ? reg.crashes : '—'}</td>
+        <td class="mono small">${esc(reg.reproducer || '—')}</td>
+        <td class="small muted">${esc(reg.note || (reg.at ? new Date(reg.at * 1000).toLocaleTimeString() : '—'))}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="7" class="muted">还没有桶</td></tr>';
+  } catch (e) { /* boot */ }
+}
+
+document.getElementById('btn-run').onclick = async () => {
+  const btn = document.getElementById('btn-run');
+  btn.disabled = true; btn.textContent = '回归中…';
+  try {
+    const j = await API.post('/api/regression/run');
+    const card = document.getElementById('run-card');
+    card.style.display = 'block';
+    document.getElementById('run-body').innerHTML = j.results.map(r => `
+      <tr><td class="mono small">${esc(r.label)}</td>
+      <td>${statusPill(r.status)}</td>
+      <td class="mono small">${esc(r.new_signature || '—')}</td>
+      <td class="mono small">${esc(r.detail || '—')}</td></tr>`).join('');
+    toast(`回归完成: ${j.summary.fixed} 修复 / ${j.summary.open} 仍存在`);
+    load();
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.textContent = '对修复版一键回归'; }
+};
+
+load();
+document.addEventListener('DOMContentLoaded', load);
+setInterval(load, 6000);
+</script>
+{% endblock %}
